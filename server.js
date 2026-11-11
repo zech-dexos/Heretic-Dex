@@ -120,8 +120,9 @@ app.get('/api/models', async (req, res) => {
 });
 
 app.post('/api/chat', allowRequest, async (req, res) => {
-  const model = typeof req.body.model === 'string' ? req.body.model : '';
-  const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
+  const body = req.body || {};
+  const model = typeof body.model === 'string' ? body.model : '';
+  const messages = Array.isArray(body.messages) ? body.messages : [];
 
   if (!model || messages.length === 0 || messages.length > 20) {
     return res.status(400).json({ error: 'Choose a model and provide between 1 and 20 messages.' });
@@ -220,7 +221,7 @@ app.post('/api/chat', allowRequest, async (req, res) => {
   }
 });
 
-app.get('*', (req, res, next) => {
+app.use((req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
