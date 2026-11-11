@@ -17,9 +17,9 @@ describe('Heretic Test-Drive', () => {
 
       if (url === '/api/chat') {
         const chunks = [
-          'data: {"choices":[{"delta":{"content":"Real "}}]}\\n\\n',
-          'data: {"choices":[{"delta":{"content":"hosted response"}}]}\\n\\n',
-          'data: [DONE]\\n\\n'
+          'data: {"choices":[{"delta":{"content":"Real "}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"hosted response"}}]}\n\n',
+          'data: [DONE]\n\n'
         ];
         let index = 0;
         const body = {
