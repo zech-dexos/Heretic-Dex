@@ -8,47 +8,52 @@ global.fetch = jest.fn((url) => {
     return Promise.resolve({
       ok: true,
       json: () => Promise.resolve([
-        { id: 'author/heretic-model-1-gguf', author: 'author', downloads: 1000, tags: ['heretic'] },
         { id: 'author2/heretic-model-2', author: 'author2', downloads: 500, tags: ['heretic'] }
       ])
     });
-  } else if (typeof url === 'string' && url.includes('health')) {
-       return Promise.resolve({ ok: true });
-  } else if (typeof url === 'string' && url.includes('completions')) {
-       return Promise.resolve({
-           ok: true,
-           body: {
-               getReader: () => {
-                   let i = 0;
-                   return {
-                       read: () => {
-                           if (i === 0) {
-                               i++;
-                               return Promise.resolve({ done: false, value: new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Mock"}}]}\n') });
-                           } else if (i === 1) {
-                               i++;
-                               return Promise.resolve({ done: false, value: new TextEncoder().encode('data: {"choices":[{"delta":{"content":" response"}}]}\n') });
-                           }
-                           return Promise.resolve({ done: true });
-                       }
-                   };
-               }
-           }
-       });
   }
   return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
 }) as jest.Mock;
 
+jest.mock('@mlc-ai/web-llm', () => {
+  return {
+    CreateMLCEngine: jest.fn().mockResolvedValue({
+      chat: {
+        completions: {
+          create: jest.fn().mockResolvedValue({
+            [Symbol.asyncIterator]: () => {
+              let i = 0;
+              return {
+                next: () => {
+                  if (i === 0) {
+                    i++;
+                    return Promise.resolve({ value: { choices: [{ delta: { content: 'Mock' } }] }, done: false });
+                  } else if (i === 1) {
+                    i++;
+                    return Promise.resolve({ value: { choices: [{ delta: { content: ' response' } }] }, done: false });
+                  }
+                  return Promise.resolve({ done: true });
+                }
+              };
+            }
+          })
+        }
+      }
+    })
+  };
+});
+
 describe('App', () => {
   beforeEach(() => {
     (global.fetch as jest.Mock).mockClear();
+    (webllm.CreateMLCEngine as jest.Mock).mockClear();
   });
 
-  test('preserves Dex Core continuity when switching models in LlamaCppBackend', async () => {
+  test('loads WebLLM model and can chat', async () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText('author/heretic-model-1-gguf')).toBeInTheDocument();
+      expect(screen.getByText('Llama-3.1-8B-Instruct-q4f32_1-MLC')).toBeInTheDocument();
     });
 
     const loadButtons = screen.getAllByText('Load Model');
@@ -56,10 +61,11 @@ describe('App', () => {
     fireEvent.click(loadButtons[0]);
 
     await waitFor(() => {
-      expect(screen.getByText(/Switched reasoning provider/i)).toBeInTheDocument();
+      expect(webllm.CreateMLCEngine).toHaveBeenCalled();
+      expect(screen.getByText(/Reasoning provider switched/i)).toBeInTheDocument();
     });
 
-    const chatInput = screen.getByPlaceholderText(/Speak/i);
+    const chatInput = screen.getByPlaceholderText(/Ask something/i);
     const sendButton = screen.getByText('Send');
 
     fireEvent.change(chatInput, { target: { value: 'First message' } });
