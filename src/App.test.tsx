@@ -1,79 +1,52 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
-import * as webllm from '@mlc-ai/web-llm';
 
-global.fetch = jest.fn((url) => {
-  if (typeof url === 'string' && url.includes('api/models')) {
-    return Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve([
-        { id: 'author2/heretic-model-2', author: 'author2', downloads: 500, tags: ['heretic'] }
-      ])
-    });
-  }
-  return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
-}) as jest.Mock;
-
-jest.mock('@mlc-ai/web-llm', () => {
-  return {
-    CreateMLCEngine: jest.fn().mockResolvedValue({
-      chat: {
-        completions: {
-          create: jest.fn().mockResolvedValue({
-            [Symbol.asyncIterator]: () => {
-              let i = 0;
-              return {
-                next: () => {
-                  if (i === 0) {
-                    i++;
-                    return Promise.resolve({ value: { choices: [{ delta: { content: 'Mock' } }] }, done: false });
-                  } else if (i === 1) {
-                    i++;
-                    return Promise.resolve({ value: { choices: [{ delta: { content: ' response' } }] }, done: false });
-                  }
-                  return Promise.resolve({ done: true });
-                }
-              };
-            }
-          })
-        }
-      }
-    })
-  };
-});
-
-describe('App', () => {
+describe('Heretic Test-Drive', () => {
   beforeEach(() => {
-    (global.fetch as jest.Mock).mockClear();
-    (webllm.CreateMLCEngine as jest.Mock).mockClear();
+    global.fetch = jest.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/models') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            models: [{ id: 'publisher/heretic-model', providers: ['test-provider'] }]
+          })
+        } as Response);
+      }
+
+      if (url === '/api/chat') {
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(
+              'data: {"choices":[{"delta":{"content":"Real "}}]}\\n\\n' +
+              'data: {"choices":[{"delta":{"content":"hosted response"}}]}\\n\\n' +
+              'data: [DONE]\\n\\n'
+            ));
+            controller.close();
+          }
+        });
+        return Promise.resolve({ ok: true, body: stream } as Response);
+      }
+
+      return Promise.reject(new Error('Unexpected request: ' + url));
+    }) as jest.Mock;
   });
 
-  test('loads WebLLM model and can chat', async () => {
+  test('lists only server-provided models and streams a hosted response', async () => {
     render(<App />);
 
-    await waitFor(() => {
-      expect(screen.getByText('Llama-3.1-8B-Instruct-q4f32_1-MLC')).toBeInTheDocument();
-    });
-
-    const loadButtons = screen.getAllByText('Load Model');
-    expect(loadButtons.length).toBeGreaterThan(0);
-    fireEvent.click(loadButtons[0]);
+    expect(await screen.findByText('publisher/heretic-model')).toBeInTheDocument();
+    const input = screen.getByPlaceholderText('Ask this model something…');
+    fireEvent.change(input, { target: { value: 'Hello' } });
+    fireEvent.click(screen.getByText('Send'));
 
     await waitFor(() => {
-      expect(webllm.CreateMLCEngine).toHaveBeenCalled();
-      expect(screen.getByText(/Reasoning provider switched/i)).toBeInTheDocument();
+      expect(screen.getByText('Real hosted response')).toBeInTheDocument();
     });
 
-    const chatInput = screen.getByPlaceholderText(/Ask something/i);
-    const sendButton = screen.getByText('Send');
-
-    fireEvent.change(chatInput, { target: { value: 'First message' } });
-    fireEvent.click(sendButton);
-
-    await waitFor(() => {
-      expect(screen.getByText('First message')).toBeInTheDocument();
-      expect(screen.getByText('Mock response')).toBeInTheDocument();
-    });
+    expect(global.fetch).toHaveBeenCalledWith('/api/chat', expect.objectContaining({
+      method: 'POST'
+    }));
   });
 });
