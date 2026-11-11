@@ -16,17 +16,20 @@ describe('Heretic Test-Drive', () => {
       }
 
       if (url === '/api/chat') {
-        const stream = new ReadableStream({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode(
-              'data: {"choices":[{"delta":{"content":"Real "}}]}\\n\\n' +
-              'data: {"choices":[{"delta":{"content":"hosted response"}}]}\\n\\n' +
-              'data: [DONE]\\n\\n'
-            ));
-            controller.close();
-          }
-        });
-        return Promise.resolve({ ok: true, body: stream } as Response);
+        const chunks = [
+          'data: {"choices":[{"delta":{"content":"Real "}}]}\\n\\n',
+          'data: {"choices":[{"delta":{"content":"hosted response"}}]}\\n\\n',
+          'data: [DONE]\\n\\n'
+        ];
+        let index = 0;
+        const body = {
+          getReader: () => ({
+            read: async () => index < chunks.length
+              ? { done: false, value: new Uint8Array(Array.from(chunks[index++]).map((char) => char.charCodeAt(0))) }
+              : { done: true, value: undefined }
+          })
+        };
+        return Promise.resolve({ ok: true, body } as unknown as Response);
       }
 
       return Promise.reject(new Error('Unexpected request: ' + url));
