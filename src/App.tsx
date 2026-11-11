@@ -1,61 +1,60 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
-import { InferenceBackend, Message } from './inference/InferenceBackend';
-import { WebLLMBackend } from './inference/WebLLMBackend';
 
-interface ModelInfo {
+type Role = 'system' | 'user' | 'assistant';
+interface ChatMessage {
+  role: Role;
+  content: string;
+}
+interface HostedModel {
   id: string;
-  author: string;
-  downloads: number;
-  tags: string[];
+  providers: string[];
 }
 
 const App: React.FC = () => {
-  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [models, setModels] = useState<HostedModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [currentModel, setCurrentModel] = useState<string | null>(null);
-
-  const [activeBackend] = useState<InferenceBackend>(new WebLLMBackend());
-
-  const [engineStatus, setEngineStatus] = useState<string>('Offline');
-  const [progress, setProgress] = useState<number>(0);
-  const [hardwareWarning, setHardwareWarning] = useState<string | null>(null);
-
-  const [messages, setMessages] = useState<Message[]>([
-    { role: 'system', content: 'Heretic Model Test-Drive Initialized. Select a model to begin.' }
-  ]);
+  const [serviceStatus, setServiceStatus] = useState('Checking hosted inference…');
+  const [pageError, setPageError] = useState('');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const searchModels = async (query: string) => {
-    setLoading(true);
-    try {
-      const results = await activeBackend.discover_models(query);
-
-      // Inject known working MLC model for demonstration since there are no pre-compiled Heretic WebLLM models yet
-      if (query.toLowerCase().includes('heretic')) {
-          results.unshift({
-              id: 'Llama-3.1-8B-Instruct-q4f32_1-MLC',
-              author: 'mlc-ai',
-              downloads: 100000,
-              tags: ['mlc', 'webllm', 'compatible']
-          });
-      }
-
-      setModels(results);
-    } catch (error) {
-      console.error("Failed to fetch models", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const filteredModels = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return models;
+    return models.filter((model) => model.id.toLowerCase().includes(query));
+  }, [models, searchQuery]);
 
   useEffect(() => {
-    searchModels('heretic');
-  }, [activeBackend]);
+    let cancelled = false;
+
+    const loadModels = async () => {
+      try {
+        const response = await fetch('/api/models');
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Could not load hosted models.');
+        if (cancelled) return;
+
+        const available: HostedModel[] = payload.models || [];
+        setModels(available);
+        setServiceStatus(available.length > 0 ? 'Hosted inference ready' : 'No Heretic models enabled');
+        if (available.length > 0) setSelectedModel(available[0].id);
+        if (available.length === 0) {
+          setPageError('The inference server is running, but it has no enabled Heretic models. Configure HERETIC_MODEL_IDS with model IDs that are available from the hosted provider.');
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setServiceStatus('Inference unavailable');
+        setPageError(error instanceof Error ? error.message : 'Could not connect to the hosted inference server.');
+      }
+    };
+
+    loadModels();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (messagesEndRef.current && typeof messagesEndRef.current.scrollIntoView === 'function') {
@@ -63,153 +62,155 @@ const App: React.FC = () => {
     }
   }, [messages]);
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    searchModels(searchQuery);
-  };
+  const handleSend = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const prompt = input.trim();
+    if (!prompt || !selectedModel || isGenerating) return;
 
-  const loadModel = async (modelId: string) => {
-    setCurrentModel(modelId);
-    setEngineStatus('Loading...');
-    setProgress(0);
-    setHardwareWarning(null);
-
-    try {
-      const requirements = activeBackend.estimate_requirements(modelId);
-
-      let systemRam = 'Unknown';
-      if ((navigator as any).deviceMemory) {
-          systemRam = (navigator as any).deviceMemory + 'GB';
-          if ((navigator as any).deviceMemory * 1024 < requirements.ramRequiredMB) {
-              setHardwareWarning(`Warning: This model requires ~${requirements.ramRequiredMB}MB RAM, but your system only reports ~${systemRam}. Performance may be poor or it may fail to load.`);
-          }
-      }
-
-      await activeBackend.load_model(modelId, (text, p) => {
-        setEngineStatus(`Loading: ${text}`);
-        setProgress(p);
-      });
-
-      setEngineStatus('Online');
-      setProgress(100);
-      setMessages([{
-        role: 'system',
-        content: `Reasoning provider switched to ${modelId}. Ready.`
-      }]);
-    } catch (error: any) {
-      console.error('Error loading model:', error);
-      setEngineStatus(`Error: ${error.message}`);
-    }
-  };
-
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const isOnline = await activeBackend.health_check();
-    if (!input.trim() || !isOnline || isGenerating) return;
-
-    const userMsg = input.trim();
+    const conversation = [...messages, { role: 'user' as const, content: prompt }];
+    setMessages(conversation);
     setInput('');
+    setPageError('');
     setIsGenerating(true);
-
-    const updatedMessages = [...messages, { role: 'user' as const, content: userMsg }];
-    setMessages(updatedMessages);
+    setMessages((current) => [...current, { role: 'assistant', content: '' }]);
 
     try {
-      let currentReply = '';
-      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
-
-      await activeBackend.stream_generate(updatedMessages, (chunk) => {
-        currentReply += chunk;
-        setMessages(prev => {
-          const newMsgs = [...prev];
-          newMsgs[newMsgs.length - 1] = { role: 'assistant', content: currentReply };
-          return newMsgs;
-        });
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: selectedModel, messages: conversation })
       });
-    } catch (error: any) {
-      console.error('Generation error:', error);
-      setMessages(prev => [...prev, { role: 'system', content: `Error: ${error.message}` }]);
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || 'The hosted model request failed.');
+      }
+      if (!response.body) throw new Error('The server did not return a response stream.');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let reply = '';
+
+      const consume = (chunk: string) => {
+        buffer += chunk;
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const eventText of events) {
+          const data = eventText.split('\n')
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trim())
+            .join('\n');
+          if (!data || data === '[DONE]') continue;
+
+          let payload: any;
+          try { payload = JSON.parse(data); } catch { continue; }
+          if (payload.error) throw new Error(payload.error);
+          const delta = payload.choices && payload.choices[0] &&
+            payload.choices[0].delta && payload.choices[0].delta.content;
+          if (typeof delta === 'string' && delta.length > 0) {
+            reply += delta;
+            setMessages((current) => {
+              const next = [...current];
+              next[next.length - 1] = { role: 'assistant', content: reply };
+              return next;
+            });
+          }
+        }
+      };
+
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+        consume(decoder.decode(result.value, { stream: true }));
+      }
+      consume(decoder.decode());
+      if (!reply) throw new Error('The model returned no text. Check the provider response and try again.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The model request failed.';
+      setPageError(message);
+      setMessages((current) => {
+        const next = [...current];
+        if (next[next.length - 1] && next[next.length - 1].role === 'assistant' && !next[next.length - 1].content) {
+          next.pop();
+        }
+        return next;
+      });
     } finally {
       setIsGenerating(false);
     }
+  };
+
+  const changeModel = (modelId: string) => {
+    setSelectedModel(modelId);
+    setMessages([]);
+    setPageError('');
   };
 
   return (
     <div className="App">
       <header>
         <h1>☧ Heretic Test-Drive</h1>
-        <p>A lightweight public page to test-drive Heretic models directly in your browser.</p>
+        <p>Choose a hosted Heretic model, ask a question, and see its actual response. Nothing to install.</p>
       </header>
 
       <main>
-        <div className="left-panel">
+        <aside className="left-panel">
           <section className="search-section">
-            <form onSubmit={handleSearch}>
-              <input
-                type="text"
-                placeholder="Search models (e.g. heretic gguf)"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-              <button type="submit">Search</button>
-            </form>
+            <label htmlFor="model-search">Available hosted models</label>
+            <input
+              id="model-search"
+              type="search"
+              placeholder="Filter available models…"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+            />
           </section>
 
           <section className="model-list">
-            {loading ? (
-              <p>Scanning registry...</p>
+            {models.length === 0 ? (
+              <p className="empty-state">No runnable Heretic models are currently published by this server.</p>
             ) : (
               <ul>
-                {models.map(model => {
-                  const isCompatible = activeBackend.is_model_compatible(model.id);
-                  return (
-                    <li key={model.id} style={{ opacity: isCompatible ? 1 : 0.6 }}>
-                      <h3>{model.id}</h3>
-                      <div className="model-meta">
-                        Downloads: {model.downloads?.toLocaleString() || 0}
-                        <br/>
-                        Status: {isCompatible ? 'Runnable via Browser WebGPU' : 'Requires conversion to WebLLM format'}
-                      </div>
-                      <button
-                        onClick={() => loadModel(model.id)}
-                        disabled={!isCompatible || (currentModel === model.id && engineStatus.startsWith('Loading'))}
-                      >
-                        {currentModel === model.id ? 'Selected' : 'Load Model'}
-                      </button>
-                      {!isCompatible && <p style={{fontSize: '0.8em', color: '#f0be55'}}>Note: This model is not currently compiled for WebLLM and cannot be run natively in the browser without conversion. Use the fallback Llama model above for demonstration.</p>}
-                    </li>
-                  )
-                })}
+                {filteredModels.map((model) => (
+                  <li key={model.id} className={selectedModel === model.id ? 'selected' : ''}>
+                    <h3>{model.id}</h3>
+                    <div className="model-meta">
+                      Hosted by: {model.providers.length > 0 ? model.providers.join(', ') : 'Configured inference endpoint'}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => changeModel(model.id)}
+                      disabled={selectedModel === model.id || isGenerating}
+                    >
+                      {selectedModel === model.id ? 'Selected' : 'Use this model'}
+                    </button>
+                  </li>
+                ))}
               </ul>
             )}
           </section>
-        </div>
+        </aside>
 
-        <div className="right-panel">
+        <section className="right-panel">
           <div className="controls">
-            <div className="status">
-              Status: {engineStatus}
-            </div>
-            {currentModel && <div>Model: {currentModel}</div>}
+            <div className="status">Status: {serviceStatus}</div>
+            {selectedModel && <div className="model-name">Model: {selectedModel}</div>}
           </div>
 
-          {hardwareWarning && (
-             <div style={{color: '#f0be55', backgroundColor: '#3d3020', padding: '10px', marginTop: '10px', borderRadius: '4px', fontSize: '0.9em'}}>
-                 {hardwareWarning}
-             </div>
-          )}
-
-          {engineStatus.startsWith('Loading') && (
-            <div className="progress-bar-container">
-              <div className="progress-bar" style={{ width: `${progress}%` }}></div>
-            </div>
-          )}
+          {pageError && <div className="error-message" role="alert">{pageError}</div>}
 
           <div className="chat-container">
-            <div className="messages">
-              {messages.map((msg, idx) => (
-                <div key={idx} className={`message ${msg.role}`}>
-                  {msg.content}
+            <div className="messages" aria-live="polite">
+              {messages.length === 0 && (
+                <div className="message system">
+                  Select an available model, then send a question. Responses come from the hosted model provider.
+                </div>
+              )}
+              {messages.map((message, index) => (
+                <div key={index} className={'message ' + message.role}>
+                  {message.content || (message.role === 'assistant' && isGenerating ? 'Thinking…' : '')}
                 </div>
               ))}
               <div ref={messagesEndRef} />
@@ -219,16 +220,17 @@ const App: React.FC = () => {
               <input
                 type="text"
                 value={input}
-                onChange={e => setInput(e.target.value)}
-                placeholder={engineStatus === 'Online' ? "Ask something..." : "Load a model first..."}
-                disabled={engineStatus !== 'Online' || isGenerating}
+                onChange={(event) => setInput(event.target.value)}
+                placeholder={selectedModel ? 'Ask this model something…' : 'No hosted model available'}
+                disabled={!selectedModel || isGenerating}
+                maxLength={4000}
               />
-              <button type="submit" disabled={!input.trim() || engineStatus !== 'Online' || isGenerating}>
-                Send
+              <button type="submit" disabled={!input.trim() || !selectedModel || isGenerating}>
+                {isGenerating ? 'Waiting…' : 'Send'}
               </button>
             </form>
           </div>
-        </div>
+        </section>
       </main>
     </div>
   );
