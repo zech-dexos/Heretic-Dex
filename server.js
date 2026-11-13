@@ -11,7 +11,7 @@ const INFERENCE_BASE_URL = (
   process.env.INFERENCE_BASE_URL ||
   process.env.HF_INFERENCE_BASE_URL ||
   'https://router.huggingface.co/v1'
-).replace(/\\/+$/, '');
+).replace(/\/+$/, '');
 const INFERENCE_REFERER = process.env.INFERENCE_REFERER || 'https://heretic-dex.onrender.com/';
 const INFERENCE_APP_NAME = process.env.INFERENCE_APP_NAME || 'Heretic Test-Drive';
 const MAX_REQUESTS_PER_WINDOW = Number.parseInt(process.env.MAX_REQUESTS_PER_WINDOW || '10', 10);
@@ -236,7 +236,7 @@ app.post('/api/chat', allowRequest, async (req, res) => {
     res.end();
   } catch (error) {
     if (!controller.signal.aborted && !res.destroyed) {
-      res.write('data: ' + JSON.stringify({ error: 'The response stream was interrupted.' }) + '\\n\\n');
+      res.write('data: ' + JSON.stringify({ error: 'The response stream was interrupted.' }) + '\n\n');
       res.end();
     }
   }
