@@ -3,8 +3,22 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const HF_TOKEN = process.env.HF_TOKEN;
-const INFERENCE_BASE_URL = (process.env.HF_INFERENCE_BASE_URL || 'https://router.huggingface.co/v1').replace(/\/+$/, '');
+
+// Provider-neutral names are preferred. HF_TOKEN / HF_INFERENCE_BASE_URL remain
+// supported so existing Hugging Face deployments do not break.
+const INFERENCE_API_KEY = process.env.INFERENCE_API_KEY || process.env.HF_TOKEN;
+const INFERENCE_BASE_URL = (
+  process.env.INFERENCE_BASE_URL ||
+  process.env.HF_INFERENCE_BASE_URL ||
+  'https://router.huggingface.co/v1'
+).replace(/\\/+$/, '');
+const INFERENCE_REFERER = process.env.INFERENCE_REFERER || 'https://heretic-dex.onrender.com/';
+const INFERENCE_APP_NAME = process.env.INFERENCE_APP_NAME || 'Heretic Test-Drive';
+const MAX_REQUESTS_PER_WINDOW = Number.parseInt(process.env.MAX_REQUESTS_PER_WINDOW || '10', 10);
+const MAX_OUTPUT_TOKENS = Math.min(
+  700,
+  Math.max(64, Number.parseInt(process.env.MAX_OUTPUT_TOKENS || '500', 10))
+);
 const CONFIGURED_MODELS = (process.env.HERETIC_MODEL_IDS || '')
   .split(',')
   .map((value) => value.trim())
@@ -14,7 +28,6 @@ const MODEL_CACHE_MS = 30 * 1000;
 let modelCache = { expiresAt: 0, models: [] };
 const requestBuckets = new Map();
 const WINDOW_MS = 10 * 60 * 1000;
-const MAX_REQUESTS_PER_WINDOW = 30;
 
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '32kb' }));
@@ -46,8 +59,17 @@ function allowRequest(req, res, next) {
   return next();
 }
 
+function providerHeaders() {
+  return {
+    Authorization: 'Bearer ' + INFERENCE_API_KEY,
+    'Content-Type': 'application/json',
+    'HTTP-Referer': INFERENCE_REFERER,
+    'X-Title': INFERENCE_APP_NAME
+  };
+}
+
 async function getAvailableModels(forceRefresh) {
-  if (!HF_TOKEN) {
+  if (!INFERENCE_API_KEY) {
     const error = new Error('Hosted inference is not configured on the server.');
     error.status = 503;
     throw error;
@@ -58,7 +80,7 @@ async function getAvailableModels(forceRefresh) {
   }
 
   const response = await fetch(INFERENCE_BASE_URL + '/models', {
-    headers: { Authorization: 'Bearer ' + HF_TOKEN }
+    headers: providerHeaders()
   });
 
   if (!response.ok) {
@@ -79,6 +101,8 @@ async function getAvailableModels(forceRefresh) {
       ? configured.has(model.id)
       : model.id.toLowerCase().includes('heretic'))
     .filter((model) => {
+      // Hugging Face includes provider status. Other compatible providers may
+      // return a plain OpenAI-style model catalog without provider metadata.
       if (!Array.isArray(model.providers) || model.providers.length === 0) return true;
       return model.providers.some((provider) => provider.status === 'live');
     })
@@ -104,7 +128,7 @@ app.get('/api/health', async (req, res) => {
   } catch (error) {
     res.status(error.status || 503).json({
       status: 'unavailable',
-      configured: Boolean(HF_TOKEN),
+      configured: Boolean(INFERENCE_API_KEY),
       message: error.message
     });
   }
@@ -165,16 +189,13 @@ app.post('/api/chat', allowRequest, async (req, res) => {
   try {
     upstream = await fetch(INFERENCE_BASE_URL + '/chat/completions', {
       method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + HF_TOKEN,
-        'Content-Type': 'application/json'
-      },
+      headers: providerHeaders(),
       body: JSON.stringify({
         model,
         messages: safeMessages,
         stream: true,
         temperature: 0.7,
-        max_tokens: 700
+        max_tokens: MAX_OUTPUT_TOKENS
       }),
       signal: controller.signal
     });
@@ -215,7 +236,7 @@ app.post('/api/chat', allowRequest, async (req, res) => {
     res.end();
   } catch (error) {
     if (!controller.signal.aborted && !res.destroyed) {
-      res.write('data: ' + JSON.stringify({ error: 'The response stream was interrupted.' }) + '\n\n');
+      res.write('data: ' + JSON.stringify({ error: 'The response stream was interrupted.' }) + '\\n\\n');
       res.end();
     }
   }
