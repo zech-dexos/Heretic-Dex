@@ -18,7 +18,7 @@ Suggested first model:
 
 - `experimentalmachines/LFM2.5-1.2B-Instruct-heretic`
 
-Featherless currently lists this model at $0.04 per million input tokens and $0.08 per million output tokens. Pricing and availability can change; verify the model's current details and your account plan before enabling public traffic.
+Featherless currently lists this model at $0.04 per million input tokens and $0.08 per million output tokens. **However, its Developer API plan starts at $50/month in credits**; this is not a free public-app host. The $25/month Chat plan is for personal interactive use and is not permitted for application/API traffic. Pricing and availability can change; verify the model's current details and your account plan before enabling public traffic.
 
 Create a Featherless account, generate an API key, and add it to the server as `INFERENCE_API_KEY`. The API key must remain server-side.
 
